@@ -1,0 +1,175 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+)
+
+func main() {
+	jsonOutput := flag.Bool("json", false, "output JSON for CI/CD")
+	resolver := flag.String("resolver", "1.1.1.1:53", "DNS resolver address")
+	timeout := flag.Duration("timeout", 10*time.Second, "connection timeout")
+	verbose := flag.Bool("verbose", false, "show detailed handshake info")
+	flag.BoolVar(verbose, "v", false, "show detailed handshake info (shorthand)")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: echcheck [flags] <domain[:port]>\n\nFlags:\n")
+		flag.PrintDefaults()
+	}
+	flag.Parse()
+
+	if flag.NArg() < 1 {
+		flag.Usage()
+		os.Exit(2)
+	}
+
+	domain, port := parseTarget(flag.Arg(0))
+	report := run(domain, port, *resolver, *timeout, *verbose)
+
+	if *jsonOutput {
+		report.PrintJSON()
+	} else {
+		report.PrintText()
+	}
+	os.Exit(report.ExitCode())
+}
+
+func parseTarget(target string) (domain, port string) {
+	if idx := strings.LastIndex(target, ":"); idx != -1 {
+		domain = target[:idx]
+		port = target[idx+1:]
+	} else {
+		domain = target
+		port = "443"
+	}
+	return
+}
+
+func run(domain, port, resolver string, timeout time.Duration, verbose bool) *Report {
+	report := &Report{Domain: domain}
+
+	// Step 1: DNS HTTPS record
+	echConfigList, ttl, err := QueryHTTPSRecord(domain, resolver)
+	if err != nil {
+		report.Add("DNS HTTPS Record", StatusFail, fmt.Sprintf("Error: %v", err))
+		report.Finalize()
+		return report
+	}
+	if echConfigList == nil {
+		report.ECHSupported = false
+		report.Add("DNS HTTPS Record", StatusFail, "No HTTPS RR found")
+		report.Add("ECH Negotiation", StatusSkip, "Skipped (no ECHConfig)")
+		report.Finalize()
+		return report
+	}
+	report.ECHSupported = true
+	report.Add("DNS HTTPS Record", StatusPass, fmt.Sprintf("Found (TTL: %ds)", ttl))
+
+	// Step 2: Parse ECHConfig
+	configs, parseErr := ParseECHConfigList(echConfigList)
+	if parseErr != nil {
+		report.Add("ECHConfig Parse", StatusFail, fmt.Sprintf("Error: %v", parseErr))
+		report.Finalize()
+		return report
+	}
+	if len(configs) == 0 {
+		report.Add("ECHConfig Parse", StatusFail, "No configs in ECHConfigList")
+		report.Finalize()
+		return report
+	}
+
+	cfg := configs[0] // use first config for display
+	report.Add("ECHConfig Version", StatusPass, fmt.Sprintf("0x%04x", cfg.Version))
+	report.Add("KEM", StatusPass, fmt.Sprintf("%s (0x%04x)", cfg.KEM, cfg.KEMID))
+	if len(cfg.CipherSuites) > 0 {
+		cs := cfg.CipherSuites[0]
+		report.Add("KDF / AEAD", StatusPass, fmt.Sprintf("%s / %s", cs.KDF, cs.AEAD))
+	}
+	report.Add("Public Name", StatusPass, cfg.PublicName)
+	report.Add("Config ID", StatusPass, fmt.Sprintf("0x%02x", cfg.ConfigID))
+
+	mnlStatus := StatusPass
+	mnlDetail := fmt.Sprintf("%d", cfg.MaxNameLength)
+	if cfg.MaxNameLength == 0 {
+		mnlDetail += " (server-managed padding)"
+	} else if cfg.MaxNameLength < uint8(len(domain)) {
+		mnlStatus = StatusWarn
+		mnlDetail += fmt.Sprintf(" (shorter than domain length %d)", len(domain))
+	}
+	report.Add("Max Name Length", mnlStatus, mnlDetail)
+
+	if verbose {
+		fmt.Fprintf(os.Stderr, "\n  [verbose] ECHConfigList: %d configs, %d bytes\n", len(configs), len(echConfigList))
+		fmt.Fprintf(os.Stderr, "  [verbose] Public key: %d bytes\n", cfg.PublicKeyLen)
+		fmt.Fprintf(os.Stderr, "  [verbose] Cipher suites: %d\n", len(cfg.CipherSuites))
+		for i, cs := range cfg.CipherSuites {
+			fmt.Fprintf(os.Stderr, "  [verbose]   [%d] %s / %s\n", i, cs.KDF, cs.AEAD)
+		}
+	}
+
+	// Step 3: ECH Negotiation
+	negResult, err := CheckECHNegotiation(domain, port, echConfigList, timeout)
+	if err != nil {
+		report.Add("ECH Negotiation", StatusFail, fmt.Sprintf("Error: %v", err))
+		report.Finalize()
+		return report
+	}
+	if negResult.Accepted {
+		detail := fmt.Sprintf("Accepted (%s)", negResult.TLSVersion)
+		report.Add("ECH Negotiation", StatusPass, detail)
+	} else {
+		report.Add("ECH Negotiation", StatusFail, "Rejected by server")
+	}
+
+	if verbose && negResult.Accepted && len(negResult.PeerCerts) > 0 {
+		cert := negResult.PeerCerts[0]
+		fmt.Fprintf(os.Stderr, "  [verbose] Peer cert subject: %s\n", cert.Subject.CommonName)
+		fmt.Fprintf(os.Stderr, "  [verbose] Peer cert SANs: %v\n", cert.DNSNames)
+		fmt.Fprintf(os.Stderr, "  [verbose] Cipher suite: %s\n", negResult.CipherSuite)
+	}
+
+	// Step 4: Retry Configs
+	retryResult, err := CheckRetryConfigs(domain, port, echConfigList, timeout)
+	if err != nil {
+		report.Add("Retry Configs", StatusWarn, fmt.Sprintf("Error: %v", err))
+	} else if retryResult.RetryConfigsReceived && retryResult.RetryConfigsValid {
+		detail := "Server returns valid retry_configs"
+		if retryResult.RetrySucceeded {
+			detail += " (retry succeeded)"
+		}
+		report.Add("Retry Configs", StatusPass, detail)
+	} else if retryResult.RetryConfigsReceived {
+		report.Add("Retry Configs", StatusWarn, "Received but failed to parse")
+	} else {
+		report.Add("Retry Configs", StatusWarn, "Server did not send retry_configs")
+	}
+
+	// Step 5: Non-ECH Fallback (inverse GREASE)
+	fallbackResult, err := CheckFallback(domain, port, timeout)
+	if err != nil {
+		report.Add("Non-ECH Fallback", StatusWarn, fmt.Sprintf("Error: %v", err))
+	} else if fallbackResult.HandshakeSucceeded {
+		report.Add("Non-ECH Fallback", StatusPass, "Server accepts non-ECH clients")
+	} else {
+		report.Add("Non-ECH Fallback", StatusFail, "Server rejects non-ECH clients")
+	}
+
+	// Step 6: SNI Leakage
+	if cfg.PublicName != "" && cfg.PublicName != domain {
+		leaks, certDomains, err := CheckSNILeakage(cfg.PublicName, port, domain, timeout)
+		if err != nil {
+			report.Add("SNI Leakage", StatusWarn, fmt.Sprintf("Error: %v", err))
+		} else if leaks {
+			report.Add("SNI Leakage", StatusFail, fmt.Sprintf("Outer cert covers inner domain (domains: %v)", certDomains))
+		} else {
+			report.Add("SNI Leakage", StatusPass, fmt.Sprintf("Outer SNI = %s (no leak)", cfg.PublicName))
+		}
+	} else {
+		report.Add("SNI Leakage", StatusSkip, "public_name same as domain or empty")
+	}
+
+	report.Finalize()
+	return report
+}
