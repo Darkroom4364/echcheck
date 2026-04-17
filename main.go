@@ -33,11 +33,18 @@ func main() {
 		return
 	}
 
-	dnsOpts := DNSOptions{Resolver: *resolver, DoHURL: *dohURL}
+	if *timeout <= 0 {
+		fmt.Fprintln(os.Stderr, "error: timeout must be a positive duration")
+		os.Exit(2)
+	}
+
+	dnsOpts := DNSOptions{Resolver: *resolver, DoHURL: *dohURL, Timeout: *timeout}
 
 	if *batch {
-		runBatch(dnsOpts, *timeout, *verbose, *jsonOutput)
-		return
+		if flag.NArg() > 0 {
+			fmt.Fprintln(os.Stderr, "warning: domain argument ignored when --batch is used")
+		}
+		os.Exit(runBatch(dnsOpts, *timeout, *verbose, *jsonOutput))
 	}
 
 	if flag.NArg() < 1 {
@@ -67,7 +74,7 @@ func parseTarget(target string) (string, string) {
 	return host, port
 }
 
-func runBatch(dnsOpts DNSOptions, timeout time.Duration, verbose, jsonOutput bool) {
+func runBatch(dnsOpts DNSOptions, timeout time.Duration, verbose, jsonOutput bool) int {
 	scanner := bufio.NewScanner(os.Stdin)
 	var reports []*Report
 	exitCode := 0
@@ -92,6 +99,11 @@ func runBatch(dnsOpts DNSOptions, timeout time.Duration, verbose, jsonOutput boo
 		fmt.Fprintf(os.Stderr, "error reading input: %v\n", err)
 	}
 
+	if len(reports) == 0 {
+		fmt.Fprintln(os.Stderr, "error: no domains found in batch input")
+		return 2
+	}
+
 	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -99,7 +111,7 @@ func runBatch(dnsOpts DNSOptions, timeout time.Duration, verbose, jsonOutput boo
 			fmt.Fprintf(os.Stderr, "error encoding JSON: %v\n", err)
 		}
 	}
-	os.Exit(exitCode)
+	return exitCode
 }
 
 func run(domain, port string, dnsOpts DNSOptions, timeout time.Duration, verbose bool) *Report {
@@ -173,7 +185,11 @@ func run(domain, port string, dnsOpts DNSOptions, timeout time.Duration, verbose
 	}
 	if negResult.Accepted {
 		detail := fmt.Sprintf("Accepted (%s)", negResult.TLSVersion)
-		report.Add("ECH Negotiation", StatusPass, detail)
+		if !negResult.TLS13 {
+			report.Add("ECH Negotiation", StatusWarn, detail+" — ECH requires TLS 1.3")
+		} else {
+			report.Add("ECH Negotiation", StatusPass, detail)
+		}
 	} else {
 		report.Add("ECH Negotiation", StatusFail, "Rejected by server")
 	}
@@ -203,10 +219,16 @@ func run(domain, port string, dnsOpts DNSOptions, timeout time.Duration, verbose
 		detail := "Server returns valid retry_configs"
 		if retryResult.RetrySucceeded {
 			detail += " (retry succeeded)"
+		} else if retryResult.RetryError != nil {
+			detail += fmt.Sprintf(" (retry failed: %v)", retryResult.RetryError)
 		}
 		report.Add("Retry Configs", StatusPass, detail)
 	} else if retryResult.RetryConfigsReceived {
-		report.Add("Retry Configs", StatusWarn, "Received but failed to parse")
+		detail := "Received but failed to parse"
+		if retryResult.ParseError != nil {
+			detail += fmt.Sprintf(": %v", retryResult.ParseError)
+		}
+		report.Add("Retry Configs", StatusWarn, detail)
 	} else {
 		report.Add("Retry Configs", StatusWarn, "Server did not send retry_configs")
 	}
@@ -218,7 +240,11 @@ func run(domain, port string, dnsOpts DNSOptions, timeout time.Duration, verbose
 	} else if fallbackResult.HandshakeSucceeded {
 		report.Add("GREASE Handling", StatusPass, "Server ignores absent ECH gracefully")
 	} else {
-		report.Add("GREASE Handling", StatusFail, "Server rejects non-ECH clients")
+		detail := "Server rejects non-ECH clients"
+		if fallbackResult.ErrorDetail != "" {
+			detail += ": " + fallbackResult.ErrorDetail
+		}
+		report.Add("GREASE Handling", StatusFail, detail)
 	}
 
 	// Step 6: SNI Leakage + Certificate (outer)

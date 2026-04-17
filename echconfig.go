@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"unicode/utf8"
 )
 
 // ECHConfigInfo holds parsed, human-readable fields from a single ECHConfig.
@@ -126,6 +127,9 @@ func parseOneECHConfig(data []byte) (ECHConfigInfo, int, error) {
 		})
 		csData = csData[4:]
 	}
+	if len(csData) != 0 {
+		return cfg, total, fmt.Errorf("trailing bytes in cipher_suites")
+	}
 
 	// maximum_name_length (1 byte)
 	if off >= len(contents) {
@@ -143,7 +147,11 @@ func parseOneECHConfig(data []byte) (ECHConfigInfo, int, error) {
 	if off+pnLen > len(contents) {
 		return cfg, total, fmt.Errorf("truncated: public_name")
 	}
-	cfg.PublicName = string(contents[off : off+pnLen])
+	pnBytes := contents[off : off+pnLen]
+	if !utf8.Valid(pnBytes) {
+		return cfg, total, fmt.Errorf("invalid UTF-8 in public_name")
+	}
+	cfg.PublicName = string(pnBytes)
 
 	return cfg, total, nil
 }

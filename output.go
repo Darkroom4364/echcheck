@@ -8,13 +8,23 @@ import (
 )
 
 // ANSI color helpers
-const (
+var (
 	colorReset  = "\033[0m"
 	colorGreen  = "\033[32m"
 	colorRed    = "\033[31m"
 	colorYellow = "\033[33m"
 	colorDim    = "\033[2m"
 )
+
+func init() {
+	if os.Getenv("NO_COLOR") != "" {
+		colorReset = ""
+		colorGreen = ""
+		colorRed = ""
+		colorYellow = ""
+		colorDim = ""
+	}
+}
 
 // CheckStatus represents the outcome of a single check.
 type CheckStatus int
@@ -66,6 +76,9 @@ func (r *Report) Add(name string, status CheckStatus, detail string) {
 
 func (r *Report) Finalize() {
 	for _, c := range r.Checks {
+		if c.check == StatusSkip {
+			continue
+		}
 		r.Summary.Total++
 		switch c.check {
 		case StatusPass:

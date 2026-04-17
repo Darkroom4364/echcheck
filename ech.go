@@ -18,6 +18,7 @@ func dialTLS(host, port string, timeout time.Duration, cfg *tls.Config) (*tls.Co
 type NegotiationResult struct {
 	Accepted    bool
 	TLSVersion  string
+	TLS13       bool // true if negotiated version is TLS 1.3 (required for ECH)
 	CipherSuite string
 	PeerCerts   []*x509.Certificate
 }
@@ -28,11 +29,14 @@ type RetryResult struct {
 	RetryConfigsValid    bool
 	RetrySucceeded       bool
 	RetryConfigs         []ECHConfigInfo
+	ParseError           error // non-nil when retry_configs could not be parsed
+	RetryError           error // non-nil when retry connection failed
 }
 
 // FallbackResult holds the outcome of a non-ECH fallback test.
 type FallbackResult struct {
 	HandshakeSucceeded bool
+	ErrorDetail        string // non-empty when handshake failed; contains the error message
 	CertDomains        []string
 }
 
@@ -56,6 +60,7 @@ func CheckECHNegotiation(host, port string, echConfigList []byte, timeout time.D
 	return &NegotiationResult{
 		Accepted:    true,
 		TLSVersion:  tlsVersionName(state.Version),
+		TLS13:       state.Version == tls.VersionTLS13,
 		CipherSuite: tls.CipherSuiteName(state.CipherSuite),
 		PeerCerts:   state.PeerCertificates,
 	}, nil
@@ -68,8 +73,13 @@ func CheckRetryConfigs(host, port string, echConfigList []byte, timeout time.Dur
 	// We need a copy to avoid mutating the original.
 	corrupted := make([]byte, len(echConfigList))
 	copy(corrupted, echConfigList)
-	if len(corrupted) > 20 {
-		corrupted[20] ^= 0xff
+	if len(corrupted) > 6 {
+		// Target a byte after the length headers (bytes 0-5) in the payload area.
+		idx := 20
+		if idx >= len(corrupted) {
+			idx = len(corrupted) - 1
+		}
+		corrupted[idx] ^= 0xff
 	}
 
 	_, err := dialTLS(host, port, timeout, &tls.Config{
@@ -95,6 +105,7 @@ func CheckRetryConfigs(host, port string, echConfigList []byte, timeout time.Dur
 	// Parse the retry configs to validate them
 	configs, parseErr := ParseECHConfigList(echErr.RetryConfigList)
 	if parseErr != nil {
+		result.ParseError = parseErr
 		return result, nil
 	}
 	result.RetryConfigs = configs
@@ -105,7 +116,9 @@ func CheckRetryConfigs(host, port string, echConfigList []byte, timeout time.Dur
 		ServerName:                     host,
 		EncryptedClientHelloConfigList: echErr.RetryConfigList,
 	})
-	if retryErr == nil {
+	if retryErr != nil {
+		result.RetryError = retryErr
+	} else {
 		conn.Close()
 		result.RetrySucceeded = true
 	}
@@ -120,7 +133,7 @@ func CheckFallback(host, port string, timeout time.Duration) (*FallbackResult, e
 		ServerName: host,
 	})
 	if err != nil {
-		return &FallbackResult{HandshakeSucceeded: false}, nil
+		return &FallbackResult{HandshakeSucceeded: false, ErrorDetail: err.Error()}, nil
 	}
 	defer conn.Close()
 

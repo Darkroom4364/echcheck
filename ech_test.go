@@ -6,6 +6,29 @@ import (
 	"time"
 )
 
+// Non-live unit tests for helper logic in ech.go.
+// The Check* functions all require real TLS connections and cannot be unit tested
+// without network. Only tlsVersionName is testable in isolation.
+
+func TestTLSVersionName(t *testing.T) {
+	tests := []struct {
+		version uint16
+		want    string
+	}{
+		{0x0301, "TLS 1.0"},
+		{0x0302, "TLS 1.1"},
+		{0x0303, "TLS 1.2"},
+		{0x0304, "TLS 1.3"},
+		{0x0305, "Unknown(0x0305)"},
+	}
+	for _, tt := range tests {
+		got := tlsVersionName(tt.version)
+		if got != tt.want {
+			t.Errorf("tlsVersionName(0x%04x) = %q, want %q", tt.version, got, tt.want)
+		}
+	}
+}
+
 func skipUnlessLive(t *testing.T) {
 	if os.Getenv("ECHCHECK_LIVE") == "" {
 		t.Skip("skipping live test (set ECHCHECK_LIVE=1 to enable)")
