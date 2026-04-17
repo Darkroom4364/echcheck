@@ -61,7 +61,7 @@ func CheckECHNegotiation(host, port string, echConfigList []byte, timeout time.D
 		}
 		return nil, fmt.Errorf("tls dial: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	state := conn.ConnectionState()
 	return &NegotiationResult{
@@ -128,7 +128,7 @@ func CheckRetryConfigs(host, port string, echConfigList []byte, timeout time.Dur
 	if retryErr != nil {
 		result.RetryError = retryErr
 	} else {
-		conn.Close()
+		_ = conn.Close()
 		result.RetrySucceeded = true
 	}
 
@@ -144,7 +144,7 @@ func CheckFallback(host, port string, timeout time.Duration) (*FallbackResult, e
 	if err != nil {
 		return &FallbackResult{HandshakeSucceeded: false, ErrorDetail: err.Error()}, nil
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	state := conn.ConnectionState()
 	var domains []string
@@ -167,7 +167,7 @@ func CheckSNILeakage(publicName, port string, innerDomain string, timeout time.D
 	if err != nil {
 		return false, nil, fmt.Errorf("connect to public_name %s: %w", publicName, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	state := conn.ConnectionState()
 	for _, cert := range state.PeerCertificates {
