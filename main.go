@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -55,15 +56,15 @@ func main() {
 	os.Exit(report.ExitCode())
 }
 
-func parseTarget(target string) (domain, port string) {
-	if idx := strings.LastIndex(target, ":"); idx != -1 {
-		domain = target[:idx]
-		port = target[idx+1:]
-	} else {
-		domain = target
+func parseTarget(target string) (string, string) {
+	host, port, err := net.SplitHostPort(target)
+	if err != nil {
+		return target, "443"
+	}
+	if port == "" {
 		port = "443"
 	}
-	return
+	return host, port
 }
 
 func runBatch(dnsOpts DNSOptions, timeout time.Duration, verbose, jsonOutput bool) {
@@ -87,11 +88,16 @@ func runBatch(dnsOpts DNSOptions, timeout time.Duration, verbose, jsonOutput boo
 			exitCode = ec
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "error reading input: %v\n", err)
+	}
 
 	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		enc.Encode(reports)
+		if err := enc.Encode(reports); err != nil {
+			fmt.Fprintf(os.Stderr, "error encoding JSON: %v\n", err)
+		}
 	}
 	os.Exit(exitCode)
 }

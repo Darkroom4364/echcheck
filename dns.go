@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
+	"time"
 
 	"github.com/miekg/dns"
 )
@@ -38,7 +38,8 @@ func dohExchange(url string, m *dns.Msg) (*dns.Msg, error) {
 	req.Header.Set("Content-Type", "application/dns-message")
 	req.Header.Set("Accept", "application/dns-message")
 
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("doh request: %w", err)
 	}
@@ -92,43 +93,4 @@ func QueryHTTPSRecord(domain string, opts DNSOptions) (echConfigList []byte, ttl
 	}
 
 	return nil, 0, nil // no HTTPS record or no ech param — not an error
-}
-
-// ResolveAddr resolves a domain to an IP address for TLS dialing.
-func ResolveAddr(domain, resolver string) (string, error) {
-	m := new(dns.Msg)
-	m.SetQuestion(dns.Fqdn(domain), dns.TypeA)
-	m.RecursionDesired = true
-
-	r, err := dns.Exchange(m, resolver)
-	if err != nil {
-		return "", fmt.Errorf("dns A query failed: %w", err)
-	}
-	for _, ans := range r.Answer {
-		if a, ok := ans.(*dns.A); ok {
-			return a.A.String(), nil
-		}
-	}
-
-	// Try AAAA
-	m.SetQuestion(dns.Fqdn(domain), dns.TypeAAAA)
-	r, err = dns.Exchange(m, resolver)
-	if err != nil {
-		return "", fmt.Errorf("dns AAAA query failed: %w", err)
-	}
-	for _, ans := range r.Answer {
-		if aaaa, ok := ans.(*dns.AAAA); ok {
-			return aaaa.AAAA.String(), nil
-		}
-	}
-
-	// Fallback to system resolver
-	addrs, err := net.LookupHost(domain)
-	if err != nil {
-		return "", fmt.Errorf("could not resolve %s: %w", domain, err)
-	}
-	if len(addrs) > 0 {
-		return addrs[0], nil
-	}
-	return "", fmt.Errorf("no addresses found for %s", domain)
 }

@@ -91,7 +91,9 @@ func (r *Report) ExitCode() int {
 func (r *Report) PrintJSON() {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
-	enc.Encode(r)
+	if err := enc.Encode(r); err != nil {
+		fmt.Fprintf(os.Stderr, "error encoding JSON: %v\n", err)
+	}
 }
 
 // PrintText outputs the report as formatted terminal text.
