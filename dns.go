@@ -44,7 +44,7 @@ func dohExchange(url string, m *dns.Msg, timeout time.Duration) (*dns.Msg, error
 	if err != nil {
 		return nil, fmt.Errorf("doh request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("doh server returned %d", resp.StatusCode)
