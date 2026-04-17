@@ -15,7 +15,7 @@ func skipUnlessLive(t *testing.T) {
 func TestLiveECHNegotiation(t *testing.T) {
 	skipUnlessLive(t)
 
-	echConfigList, _, err := QueryHTTPSRecord("crypto.cloudflare.com", "1.1.1.1:53")
+	echConfigList, _, err := QueryHTTPSRecord("crypto.cloudflare.com", DNSOptions{Resolver: "1.1.1.1:53"})
 	if err != nil {
 		t.Fatalf("DNS query: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestLiveECHNegotiation(t *testing.T) {
 func TestLiveRetryConfigs(t *testing.T) {
 	skipUnlessLive(t)
 
-	echConfigList, _, err := QueryHTTPSRecord("crypto.cloudflare.com", "1.1.1.1:53")
+	echConfigList, _, err := QueryHTTPSRecord("crypto.cloudflare.com", DNSOptions{Resolver: "1.1.1.1:53"})
 	if err != nil {
 		t.Fatalf("DNS query: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestLiveFallback(t *testing.T) {
 func TestLiveNoECH(t *testing.T) {
 	skipUnlessLive(t)
 
-	echConfigList, _, err := QueryHTTPSRecord("example.com", "1.1.1.1:53")
+	echConfigList, _, err := QueryHTTPSRecord("example.com", DNSOptions{Resolver: "1.1.1.1:53"})
 	if err != nil {
 		t.Fatalf("DNS query: %v", err)
 	}
