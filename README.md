@@ -111,15 +111,17 @@ echcheck example.com:8443
 ## How ECH Works
 
 ```
-                          Passive Observer
-                          sees only: ──────────────┐
-                                                    │
-Client ──────────────────────────────────────── Server
-         ClientHelloOuter                          │
-         ├── SNI: cloudflare-ech.com  ◄────────────┘  (cover name)
-         └── encrypted_client_hello:
-             └── ClientHelloInner (encrypted)
-                 └── SNI: real-site.com   ← hidden from observer
+Client                                          Server
+  │                                               │
+  │  ClientHelloOuter (plaintext)                  │
+  │    SNI: cloudflare-ech.com       ← visible     │
+  │    encrypted_client_hello: ...   ← opaque      │
+  │──────────────────────────────────────────────►│
+  │                                               │
+  │  Server decrypts inner:                        │
+  │    SNI: real-site.com            ← hidden      │
+  │◄──────────────────────────────────────────────│
+  │              TLS handshake completes           │
 ```
 
 1. Client fetches the server's ECH public key from DNS (HTTPS record)
