@@ -13,6 +13,24 @@ import (
 
 var version = "dev"
 
+// Check name constants used in report output and JSON.
+const (
+	checkDNS         = "DNS HTTPS Record"
+	checkECHConfig   = "ECHConfig Parse"
+	checkVersion     = "ECHConfig Version"
+	checkKEM         = "KEM"
+	checkKDFAEAD     = "KDF / AEAD"
+	checkPublicName  = "Public Name"
+	checkConfigID    = "Config ID"
+	checkMaxNameLen  = "Max Name Length"
+	checkNegotiation = "ECH Negotiation"
+	checkCertInner   = "Certificate (inner)"
+	checkRetry       = "Retry Configs"
+	checkGREASE      = "GREASE Handling"
+	checkSNI         = "SNI Leakage"
+	checkCertOuter   = "Certificate (outer)"
+)
+
 func main() {
 	jsonOutput := flag.Bool("json", false, "output JSON for CI/CD")
 	resolver := flag.String("resolver", "1.1.1.1:53", "DNS resolver address")
@@ -120,42 +138,67 @@ func run(domain, port string, dnsOpts DNSOptions, timeout time.Duration, verbose
 	// Step 1: DNS HTTPS record
 	echConfigList, ttl, err := QueryHTTPSRecord(domain, dnsOpts)
 	if err != nil {
-		report.Add("DNS HTTPS Record", StatusFail, fmt.Sprintf("Error: %v", err))
+		report.Add(checkDNS, StatusFail, fmt.Sprintf("Error: %v", err))
 		report.Finalize()
 		return report
 	}
 	if echConfigList == nil {
 		report.ECHSupported = false
-		report.Add("DNS HTTPS Record", StatusFail, "No HTTPS RR found")
-		report.Add("ECH Negotiation", StatusSkip, "Skipped (no ECHConfig)")
+		report.Add(checkDNS, StatusFail, "No HTTPS RR found")
+		report.Add(checkNegotiation, StatusSkip, "Skipped (no ECHConfig)")
 		report.Finalize()
 		return report
 	}
 	report.ECHSupported = true
-	report.Add("DNS HTTPS Record", StatusPass, fmt.Sprintf("Found (TTL: %ds)", ttl))
+	report.Add(checkDNS, StatusPass, fmt.Sprintf("Found (TTL: %ds)", ttl))
 
 	// Step 2: Parse ECHConfig
 	configs, parseErr := ParseECHConfigList(echConfigList)
 	if parseErr != nil {
-		report.Add("ECHConfig Parse", StatusFail, fmt.Sprintf("Error: %v", parseErr))
+		report.Add(checkECHConfig, StatusFail, fmt.Sprintf("Error: %v", parseErr))
 		report.Finalize()
 		return report
 	}
 	if len(configs) == 0 {
-		report.Add("ECHConfig Parse", StatusFail, "No configs in ECHConfigList")
+		report.Add(checkECHConfig, StatusFail, "No configs in ECHConfigList")
 		report.Finalize()
 		return report
 	}
 
-	cfg := configs[0] // use first config for display
-	report.Add("ECHConfig Version", StatusPass, fmt.Sprintf("0x%04x", cfg.Version))
-	report.Add("KEM", StatusPass, fmt.Sprintf("%s (0x%04x)", cfg.KEM, cfg.KEMID))
+	cfg := configs[0]
+	reportECHConfig(report, cfg, domain, configs, echConfigList, verbose)
+
+	// Step 3: ECH Negotiation
+	negResult, err := CheckECHNegotiation(domain, port, echConfigList, timeout)
+	if err != nil {
+		report.Add(checkNegotiation, StatusFail, fmt.Sprintf("Error: %v", err))
+		report.Finalize()
+		return report
+	}
+	reportNegotiation(report, negResult, domain, verbose)
+
+	// Step 4: Retry Configs
+	reportRetryConfigs(report, domain, port, echConfigList, timeout)
+
+	// Step 5: GREASE / Non-ECH Fallback
+	reportFallback(report, domain, port, timeout)
+
+	// Step 6: SNI Leakage + Certificate (outer)
+	reportSNILeakage(report, cfg.PublicName, port, domain, timeout)
+
+	report.Finalize()
+	return report
+}
+
+func reportECHConfig(report *Report, cfg ECHConfigInfo, domain string, configs []ECHConfigInfo, echConfigList []byte, verbose bool) {
+	report.Add(checkVersion, StatusPass, fmt.Sprintf("0x%04x", cfg.Version))
+	report.Add(checkKEM, StatusPass, fmt.Sprintf("%s (0x%04x)", cfg.KEM, cfg.KEMID))
 	if len(cfg.CipherSuites) > 0 {
 		cs := cfg.CipherSuites[0]
-		report.Add("KDF / AEAD", StatusPass, fmt.Sprintf("%s / %s", cs.KDF, cs.AEAD))
+		report.Add(checkKDFAEAD, StatusPass, fmt.Sprintf("%s / %s", cs.KDF, cs.AEAD))
 	}
-	report.Add("Public Name", StatusPass, cfg.PublicName)
-	report.Add("Config ID", StatusPass, fmt.Sprintf("0x%02x", cfg.ConfigID))
+	report.Add(checkPublicName, StatusPass, cfg.PublicName)
+	report.Add(checkConfigID, StatusPass, fmt.Sprintf("0x%02x", cfg.ConfigID))
 
 	mnlStatus := StatusPass
 	mnlDetail := fmt.Sprintf("%d", cfg.MaxNameLength)
@@ -165,7 +208,7 @@ func run(domain, port string, dnsOpts DNSOptions, timeout time.Duration, verbose
 		mnlStatus = StatusWarn
 		mnlDetail += fmt.Sprintf(" (shorter than domain length %d)", len(domain))
 	}
-	report.Add("Max Name Length", mnlStatus, mnlDetail)
+	report.Add(checkMaxNameLen, mnlStatus, mnlDetail)
 
 	if verbose {
 		fmt.Fprintf(os.Stderr, "\n  [verbose] ECHConfigList: %d configs, %d bytes\n", len(configs), len(echConfigList))
@@ -175,23 +218,18 @@ func run(domain, port string, dnsOpts DNSOptions, timeout time.Duration, verbose
 			fmt.Fprintf(os.Stderr, "  [verbose]   [%d] %s / %s\n", i, cs.KDF, cs.AEAD)
 		}
 	}
+}
 
-	// Step 3: ECH Negotiation
-	negResult, err := CheckECHNegotiation(domain, port, echConfigList, timeout)
-	if err != nil {
-		report.Add("ECH Negotiation", StatusFail, fmt.Sprintf("Error: %v", err))
-		report.Finalize()
-		return report
-	}
+func reportNegotiation(report *Report, negResult *NegotiationResult, domain string, verbose bool) {
 	if negResult.Accepted {
 		detail := fmt.Sprintf("Accepted (%s)", negResult.TLSVersion)
 		if !negResult.TLS13 {
-			report.Add("ECH Negotiation", StatusWarn, detail+" — ECH requires TLS 1.3")
+			report.Add(checkNegotiation, StatusWarn, detail+" — ECH requires TLS 1.3")
 		} else {
-			report.Add("ECH Negotiation", StatusPass, detail)
+			report.Add(checkNegotiation, StatusPass, detail)
 		}
 	} else {
-		report.Add("ECH Negotiation", StatusFail, "Rejected by server")
+		report.Add(checkNegotiation, StatusFail, "Rejected by server")
 	}
 
 	if verbose && negResult.Accepted && len(negResult.PeerCerts) > 0 {
@@ -201,70 +239,73 @@ func run(domain, port string, dnsOpts DNSOptions, timeout time.Duration, verbose
 		fmt.Fprintf(os.Stderr, "  [verbose] Cipher suite: %s\n", negResult.CipherSuite)
 	}
 
-	// Certificate (inner): verify the ECH-negotiated cert covers the target domain
 	if negResult.Accepted && len(negResult.PeerCerts) > 0 {
 		innerCert := negResult.PeerCerts[0]
 		if err := innerCert.VerifyHostname(domain); err == nil {
-			report.Add("Certificate (inner)", StatusPass, fmt.Sprintf("Valid for %s", domain))
+			report.Add(checkCertInner, StatusPass, fmt.Sprintf("Valid for %s", domain))
 		} else {
-			report.Add("Certificate (inner)", StatusFail, fmt.Sprintf("Not valid for %s: %v", domain, err))
+			report.Add(checkCertInner, StatusFail, fmt.Sprintf("Not valid for %s: %v", domain, err))
 		}
 	}
+}
 
-	// Step 4: Retry Configs
+func reportRetryConfigs(report *Report, domain, port string, echConfigList []byte, timeout time.Duration) {
 	retryResult, err := CheckRetryConfigs(domain, port, echConfigList, timeout)
 	if err != nil {
-		report.Add("Retry Configs", StatusWarn, fmt.Sprintf("Error: %v", err))
-	} else if retryResult.RetryConfigsReceived && retryResult.RetryConfigsValid {
+		report.Add(checkRetry, StatusWarn, fmt.Sprintf("Error: %v", err))
+		return
+	}
+	if retryResult.RetryConfigsReceived && retryResult.RetryConfigsValid {
 		detail := "Server returns valid retry_configs"
 		if retryResult.RetrySucceeded {
 			detail += " (retry succeeded)"
 		} else if retryResult.RetryError != nil {
 			detail += fmt.Sprintf(" (retry failed: %v)", retryResult.RetryError)
 		}
-		report.Add("Retry Configs", StatusPass, detail)
+		report.Add(checkRetry, StatusPass, detail)
 	} else if retryResult.RetryConfigsReceived {
 		detail := "Received but failed to parse"
 		if retryResult.ParseError != nil {
 			detail += fmt.Sprintf(": %v", retryResult.ParseError)
 		}
-		report.Add("Retry Configs", StatusWarn, detail)
+		report.Add(checkRetry, StatusWarn, detail)
 	} else {
-		report.Add("Retry Configs", StatusWarn, "Server did not send retry_configs")
+		report.Add(checkRetry, StatusWarn, "Server did not send retry_configs")
 	}
+}
 
-	// Step 5: GREASE / Non-ECH Fallback
+func reportFallback(report *Report, domain, port string, timeout time.Duration) {
 	fallbackResult, err := CheckFallback(domain, port, timeout)
 	if err != nil {
-		report.Add("GREASE Handling", StatusWarn, fmt.Sprintf("Error: %v", err))
-	} else if fallbackResult.HandshakeSucceeded {
-		report.Add("GREASE Handling", StatusPass, "Server ignores absent ECH gracefully")
+		report.Add(checkGREASE, StatusWarn, fmt.Sprintf("Error: %v", err))
+		return
+	}
+	if fallbackResult.HandshakeSucceeded {
+		report.Add(checkGREASE, StatusPass, "Server ignores absent ECH gracefully")
 	} else {
 		detail := "Server rejects non-ECH clients"
 		if fallbackResult.ErrorDetail != "" {
 			detail += ": " + fallbackResult.ErrorDetail
 		}
-		report.Add("GREASE Handling", StatusFail, detail)
+		report.Add(checkGREASE, StatusFail, detail)
 	}
+}
 
-	// Step 6: SNI Leakage + Certificate (outer)
-	if cfg.PublicName != "" && cfg.PublicName != domain {
-		leaks, certDomains, err := CheckSNILeakage(cfg.PublicName, port, domain, timeout)
-		if err != nil {
-			report.Add("SNI Leakage", StatusWarn, fmt.Sprintf("Error: %v", err))
-			report.Add("Certificate (outer)", StatusWarn, "Skipped (SNI check errored)")
-		} else if leaks {
-			report.Add("SNI Leakage", StatusFail, fmt.Sprintf("Outer cert covers inner domain (domains: %v)", certDomains))
-			report.Add("Certificate (outer)", StatusFail, fmt.Sprintf("Covers %s (should only cover %s)", domain, cfg.PublicName))
-		} else {
-			report.Add("SNI Leakage", StatusPass, fmt.Sprintf("Outer SNI = %s (no leak)", cfg.PublicName))
-			report.Add("Certificate (outer)", StatusPass, fmt.Sprintf("Valid for %s", cfg.PublicName))
-		}
+func reportSNILeakage(report *Report, publicName, port, domain string, timeout time.Duration) {
+	if publicName == "" || publicName == domain {
+		report.Add(checkSNI, StatusSkip, "public_name same as domain or empty")
+		report.Add(checkCertOuter, StatusSkip, "public_name same as domain or empty")
+		return
+	}
+	leaks, certDomains, err := CheckSNILeakage(publicName, port, domain, timeout)
+	if err != nil {
+		report.Add(checkSNI, StatusWarn, fmt.Sprintf("Error: %v", err))
+		report.Add(checkCertOuter, StatusWarn, "Skipped (SNI check errored)")
+	} else if leaks {
+		report.Add(checkSNI, StatusFail, fmt.Sprintf("Outer cert covers inner domain (domains: %v)", certDomains))
+		report.Add(checkCertOuter, StatusFail, fmt.Sprintf("Covers %s (should only cover %s)", domain, publicName))
 	} else {
-		report.Add("SNI Leakage", StatusSkip, "public_name same as domain or empty")
-		report.Add("Certificate (outer)", StatusSkip, "public_name same as domain or empty")
+		report.Add(checkSNI, StatusPass, fmt.Sprintf("Outer SNI = %s (no leak)", publicName))
+		report.Add(checkCertOuter, StatusPass, fmt.Sprintf("Valid for %s", publicName))
 	}
-
-	report.Finalize()
-	return report
 }
