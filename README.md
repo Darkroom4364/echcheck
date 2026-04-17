@@ -85,14 +85,8 @@ echcheck example.com
 # JSON output for CI/CD
 echcheck --json example.com
 
-# Batch scan from stdin
-cat domains.txt | echcheck --batch
-
 # Custom DNS resolver
 echcheck --resolver 1.1.1.1:53 example.com
-
-# Use DNS-over-HTTPS for record lookup (detect HTTPS record stripping)
-echcheck --doh https://1.1.1.1/dns-query example.com
 
 # Verbose — show full handshake details
 echcheck -v example.com
