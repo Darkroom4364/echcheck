@@ -12,20 +12,21 @@ import (
 
 // DNSOptions holds DNS resolution configuration.
 type DNSOptions struct {
-	Resolver string // UDP resolver address (e.g. "1.1.1.1:53")
-	DoHURL   string // DNS-over-HTTPS endpoint (e.g. "https://1.1.1.1/dns-query")
+	Resolver string        // UDP resolver address (e.g. "1.1.1.1:53")
+	DoHURL   string        // DNS-over-HTTPS endpoint (e.g. "https://1.1.1.1/dns-query")
+	Timeout  time.Duration // timeout for DNS queries
 }
 
 // exchange sends a DNS query using DoH if configured, otherwise UDP.
 func (o DNSOptions) exchange(m *dns.Msg) (*dns.Msg, error) {
 	if o.DoHURL != "" {
-		return dohExchange(o.DoHURL, m)
+		return dohExchange(o.DoHURL, m, o.Timeout)
 	}
 	return dns.Exchange(m, o.Resolver)
 }
 
 // dohExchange sends a DNS message over HTTPS (RFC 8484).
-func dohExchange(url string, m *dns.Msg) (*dns.Msg, error) {
+func dohExchange(url string, m *dns.Msg, timeout time.Duration) (*dns.Msg, error) {
 	packed, err := m.Pack()
 	if err != nil {
 		return nil, fmt.Errorf("packing dns message: %w", err)
@@ -38,7 +39,7 @@ func dohExchange(url string, m *dns.Msg) (*dns.Msg, error) {
 	req.Header.Set("Content-Type", "application/dns-message")
 	req.Header.Set("Accept", "application/dns-message")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("doh request: %w", err)
