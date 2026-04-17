@@ -1,0 +1,38 @@
+version: 2
+
+builds:
+  - main: .
+    binary: echcheck
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - format: tar.gz
+    name_template: "echcheck-{{ .Os }}-{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+brews:
+  - repository:
+      owner: Darkroom4364
+      name: homebrew-tap
+    name: echcheck
+    homepage: https://github.com/Darkroom4364/echcheck
+    description: Test and validate Encrypted Client Hello (ECH) deployment
+    license: Apache-2.0
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
