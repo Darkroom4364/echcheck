@@ -102,9 +102,11 @@ echcheck <domain[:port]>
 - 2: no ECH support (no HTTPS record / no ech param)
 
 ### Deferred to v2
-- `--doh` (DNS-over-HTTPS) — adds HTTP/2 complexity
-- `--batch` — `xargs` covers it
 - Raw GREASE ECH injection via crafted ClientHello
+
+### Implemented (originally deferred)
+- `--doh` (DNS-over-HTTPS)
+- `--batch`
 
 ### Test Targets
 - `crypto.cloudflare.com` — Cloudflare's ECH test endpoint

@@ -15,8 +15,8 @@ No dedicated testing tool exists. testssl.sh hasn't implemented ECH checks. SSL 
 | **DNS HTTPS Record** | Queries HTTPS RR, extracts and parses ECHConfigList from the `ech` SvcParam |
 | **ECHConfig Validation** | Validates version (0xfe0d), KEM, KDF, AEAD, public key, public_name, max_name_length |
 | **ECH Negotiation** | Attempts a real TLS 1.3 connection with ECH and verifies server acceptance |
-| **Retry Configs** | Triggers a retry scenario (bad config_id), validates server returns well-formed retry_configs |
-| **GREASE Handling** | Sends GREASE ECH extension, verifies server ignores it gracefully |
+| **Retry Configs** | Triggers a retry scenario (corrupted config), validates server returns well-formed retry_configs |
+| **Non-ECH Fallback** | Connects without ECH, verifies server still completes the handshake normally |
 | **SNI Leakage** | Verifies the real server name never appears in cleartext — outer SNI must equal public_name |
 | **Certificate Validation** | Inner cert valid for target domain, outer cert valid for public_name |
 
@@ -29,21 +29,21 @@ $ echcheck example.com
   ──────────────────────────────────
 
   DNS HTTPS Record        ✓  Found (TTL: 300s)
-  ECHConfig Version       ✓  0xfe0d (RFC 9849)
-  KEM                     ✓  X25519 (0x0020)
+  ECHConfig Version       ✓  0xfe0d
+  KEM                     ✓  DHKEM(X25519) (0x0020)
   KDF / AEAD              ✓  HKDF-SHA256 / AES-128-GCM
   Public Name             ✓  cloudflare-ech.com
   Config ID               ✓  0x42
-  Max Name Length          ✓  128 (adequate)
+  Max Name Length          ✓  128
 
   ECH Negotiation         ✓  Accepted (TLS 1.3)
-  Retry Configs           ✓  Server returns valid retry_configs
-  GREASE Handling         ✓  Server ignores GREASE gracefully
-  SNI Leakage             ✓  Outer SNI = public_name (no leak)
   Certificate (inner)     ✓  Valid for example.com
+  Retry Configs           ✓  Server returns valid retry_configs
+  Non-ECH Fallback        ✓  Server ignores absent ECH gracefully
+  SNI Leakage             ✓  Outer SNI = public_name (no leak)
   Certificate (outer)     ✓  Valid for cloudflare-ech.com
 
-  Overall: PASS (12/12 checks)
+  Overall: PASS (13/13 checks)
 ```
 
 ### No ECH
@@ -96,6 +96,13 @@ echcheck --doh https://1.1.1.1/dns-query example.com
 
 # Verbose — show full handshake details
 echcheck -v example.com
+echcheck --verbose example.com
+
+# Connection timeout
+echcheck --timeout 5s example.com
+
+# Print version
+echcheck --version
 
 # Check specific port
 echcheck example.com:8443
@@ -132,12 +139,12 @@ Client ────────────────────────�
 
 Built on Go stdlib — no external TLS libraries:
 
-- `crypto/tls` — ECH client support via `Config.EncryptedClientHelloConfigList` (Go 1.23+), rejection handling via `*tls.ECHRejectionError` with `RetryConfigList`
+- `crypto/tls` — ECH client support via `Config.EncryptedClientHelloConfigList` (Go 1.24+), rejection handling via `*tls.ECHRejectionError` with `RetryConfigList`
 - `github.com/miekg/dns` — HTTPS/SVCB record queries with `dns.SVCBECHConfig` parsing
 
 ## Positioning
 
-| Tool | Active ECH Test | Retry Validation | GREASE Test | SNI Leak Check | Batch Mode | CLI |
+| Tool | Active ECH Test | Retry Validation | Fallback Test | SNI Leak Check | Batch Mode | CLI |
 |---|---|---|---|---|---|---|
 | **echcheck** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | testssl.sh | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
