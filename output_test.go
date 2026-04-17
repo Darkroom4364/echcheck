@@ -50,6 +50,3 @@ func TestSkippedChecksDontInflateTotal(t *testing.T) {
 	}
 }
 
-// NO_COLOR env var is not implemented in output.go.
-// The code uses raw ANSI constants unconditionally.
-// Skipping NO_COLOR test since there is no such logic to verify.
