@@ -9,7 +9,14 @@ import (
 	"time"
 )
 
-func dialTLS(host, port string, timeout time.Duration, cfg *tls.Config) (*tls.Conn, error) {
+// tlsConn is the subset of *tls.Conn used by the check functions,
+// extracted to allow mocking in tests.
+type tlsConn interface {
+	ConnectionState() tls.ConnectionState
+	Close() error
+}
+
+var dialTLS = func(host, port string, timeout time.Duration, cfg *tls.Config) (tlsConn, error) {
 	addr := net.JoinHostPort(host, port)
 	return tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr, cfg)
 }
