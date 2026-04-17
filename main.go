@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -13,9 +15,11 @@ var version = "dev"
 func main() {
 	jsonOutput := flag.Bool("json", false, "output JSON for CI/CD")
 	resolver := flag.String("resolver", "1.1.1.1:53", "DNS resolver address")
+	dohURL := flag.String("doh", "", "DNS-over-HTTPS endpoint (e.g. https://1.1.1.1/dns-query)")
 	timeout := flag.Duration("timeout", 10*time.Second, "connection timeout")
 	verbose := flag.Bool("verbose", false, "show detailed handshake info")
 	flag.BoolVar(verbose, "v", false, "show detailed handshake info (shorthand)")
+	batch := flag.Bool("batch", false, "read domains from stdin, one per line")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: echcheck [flags] <domain[:port]>\n\nFlags:\n")
@@ -28,13 +32,20 @@ func main() {
 		return
 	}
 
+	dnsOpts := DNSOptions{Resolver: *resolver, DoHURL: *dohURL}
+
+	if *batch {
+		runBatch(dnsOpts, *timeout, *verbose, *jsonOutput)
+		return
+	}
+
 	if flag.NArg() < 1 {
 		flag.Usage()
 		os.Exit(2)
 	}
 
 	domain, port := parseTarget(flag.Arg(0))
-	report := run(domain, port, *resolver, *timeout, *verbose)
+	report := run(domain, port, dnsOpts, *timeout, *verbose)
 
 	if *jsonOutput {
 		report.PrintJSON()
@@ -55,11 +66,41 @@ func parseTarget(target string) (domain, port string) {
 	return
 }
 
-func run(domain, port, resolver string, timeout time.Duration, verbose bool) *Report {
+func runBatch(dnsOpts DNSOptions, timeout time.Duration, verbose, jsonOutput bool) {
+	scanner := bufio.NewScanner(os.Stdin)
+	var reports []*Report
+	exitCode := 0
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		domain, port := parseTarget(line)
+		report := run(domain, port, dnsOpts, timeout, verbose)
+		reports = append(reports, report)
+
+		if !jsonOutput {
+			report.PrintText()
+		}
+		if ec := report.ExitCode(); ec > exitCode {
+			exitCode = ec
+		}
+	}
+
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(reports)
+	}
+	os.Exit(exitCode)
+}
+
+func run(domain, port string, dnsOpts DNSOptions, timeout time.Duration, verbose bool) *Report {
 	report := &Report{Domain: domain}
 
 	// Step 1: DNS HTTPS record
-	echConfigList, ttl, err := QueryHTTPSRecord(domain, resolver)
+	echConfigList, ttl, err := QueryHTTPSRecord(domain, dnsOpts)
 	if err != nil {
 		report.Add("DNS HTTPS Record", StatusFail, fmt.Sprintf("Error: %v", err))
 		report.Finalize()
@@ -164,14 +205,14 @@ func run(domain, port, resolver string, timeout time.Duration, verbose bool) *Re
 		report.Add("Retry Configs", StatusWarn, "Server did not send retry_configs")
 	}
 
-	// Step 5: Non-ECH Fallback (inverse GREASE)
+	// Step 5: GREASE / Non-ECH Fallback
 	fallbackResult, err := CheckFallback(domain, port, timeout)
 	if err != nil {
-		report.Add("Non-ECH Fallback", StatusWarn, fmt.Sprintf("Error: %v", err))
+		report.Add("GREASE Handling", StatusWarn, fmt.Sprintf("Error: %v", err))
 	} else if fallbackResult.HandshakeSucceeded {
-		report.Add("Non-ECH Fallback", StatusPass, "Server accepts non-ECH clients")
+		report.Add("GREASE Handling", StatusPass, "Server ignores absent ECH gracefully")
 	} else {
-		report.Add("Non-ECH Fallback", StatusFail, "Server rejects non-ECH clients")
+		report.Add("GREASE Handling", StatusFail, "Server rejects non-ECH clients")
 	}
 
 	// Step 6: SNI Leakage + Certificate (outer)
