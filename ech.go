@@ -81,7 +81,9 @@ func CheckRetryConfigs(host, port string, echConfigList []byte, timeout time.Dur
 	corrupted := make([]byte, len(echConfigList))
 	copy(corrupted, echConfigList)
 	if len(corrupted) > 6 {
-		// Target a byte after the length headers (bytes 0-5) in the payload area.
+		// Byte 20 is 9 bytes into the public key (which starts at offset 11:
+		// 2 list-length + 2 version + 2 config-length + 1 config_id + 2 kem_id + 2 pk-length).
+		// Safe for any config with a key >= 10 bytes (X25519 is 32).
 		idx := 20
 		if idx >= len(corrupted) {
 			idx = len(corrupted) - 1
