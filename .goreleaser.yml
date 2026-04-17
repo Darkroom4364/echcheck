@@ -26,6 +26,7 @@ brews:
   - repository:
       owner: Darkroom4364
       name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     name: echcheck
     homepage: https://github.com/Darkroom4364/echcheck
     description: Test and validate Encrypted Client Hello (ECH) deployment
