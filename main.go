@@ -8,17 +8,25 @@ import (
 	"time"
 )
 
+var version = "dev"
+
 func main() {
 	jsonOutput := flag.Bool("json", false, "output JSON for CI/CD")
 	resolver := flag.String("resolver", "1.1.1.1:53", "DNS resolver address")
 	timeout := flag.Duration("timeout", 10*time.Second, "connection timeout")
 	verbose := flag.Bool("verbose", false, "show detailed handshake info")
 	flag.BoolVar(verbose, "v", false, "show detailed handshake info (shorthand)")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: echcheck [flags] <domain[:port]>\n\nFlags:\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("echcheck", version)
+		return
+	}
 
 	if flag.NArg() < 1 {
 		flag.Usage()
@@ -130,6 +138,16 @@ func run(domain, port, resolver string, timeout time.Duration, verbose bool) *Re
 		fmt.Fprintf(os.Stderr, "  [verbose] Cipher suite: %s\n", negResult.CipherSuite)
 	}
 
+	// Certificate (inner): verify the ECH-negotiated cert covers the target domain
+	if negResult.Accepted && len(negResult.PeerCerts) > 0 {
+		innerCert := negResult.PeerCerts[0]
+		if err := innerCert.VerifyHostname(domain); err == nil {
+			report.Add("Certificate (inner)", StatusPass, fmt.Sprintf("Valid for %s", domain))
+		} else {
+			report.Add("Certificate (inner)", StatusFail, fmt.Sprintf("Not valid for %s: %v", domain, err))
+		}
+	}
+
 	// Step 4: Retry Configs
 	retryResult, err := CheckRetryConfigs(domain, port, echConfigList, timeout)
 	if err != nil {
@@ -156,18 +174,22 @@ func run(domain, port, resolver string, timeout time.Duration, verbose bool) *Re
 		report.Add("Non-ECH Fallback", StatusFail, "Server rejects non-ECH clients")
 	}
 
-	// Step 6: SNI Leakage
+	// Step 6: SNI Leakage + Certificate (outer)
 	if cfg.PublicName != "" && cfg.PublicName != domain {
 		leaks, certDomains, err := CheckSNILeakage(cfg.PublicName, port, domain, timeout)
 		if err != nil {
 			report.Add("SNI Leakage", StatusWarn, fmt.Sprintf("Error: %v", err))
+			report.Add("Certificate (outer)", StatusWarn, "Skipped (SNI check errored)")
 		} else if leaks {
 			report.Add("SNI Leakage", StatusFail, fmt.Sprintf("Outer cert covers inner domain (domains: %v)", certDomains))
+			report.Add("Certificate (outer)", StatusFail, fmt.Sprintf("Covers %s (should only cover %s)", domain, cfg.PublicName))
 		} else {
 			report.Add("SNI Leakage", StatusPass, fmt.Sprintf("Outer SNI = %s (no leak)", cfg.PublicName))
+			report.Add("Certificate (outer)", StatusPass, fmt.Sprintf("Valid for %s", cfg.PublicName))
 		}
 	} else {
 		report.Add("SNI Leakage", StatusSkip, "public_name same as domain or empty")
+		report.Add("Certificate (outer)", StatusSkip, "public_name same as domain or empty")
 	}
 
 	report.Finalize()
