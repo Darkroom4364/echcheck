@@ -29,6 +29,8 @@ type RetryResult struct {
 	RetryConfigsValid    bool
 	RetrySucceeded       bool
 	RetryConfigs         []ECHConfigInfo
+	ParseError           error // non-nil when retry_configs could not be parsed
+	RetryError           error // non-nil when retry connection failed
 }
 
 // FallbackResult holds the outcome of a non-ECH fallback test.
@@ -103,6 +105,7 @@ func CheckRetryConfigs(host, port string, echConfigList []byte, timeout time.Dur
 	// Parse the retry configs to validate them
 	configs, parseErr := ParseECHConfigList(echErr.RetryConfigList)
 	if parseErr != nil {
+		result.ParseError = parseErr
 		return result, nil
 	}
 	result.RetryConfigs = configs
@@ -113,7 +116,9 @@ func CheckRetryConfigs(host, port string, echConfigList []byte, timeout time.Dur
 		ServerName:                     host,
 		EncryptedClientHelloConfigList: echErr.RetryConfigList,
 	})
-	if retryErr == nil {
+	if retryErr != nil {
+		result.RetryError = retryErr
+	} else {
 		conn.Close()
 		result.RetrySucceeded = true
 	}

@@ -219,10 +219,16 @@ func run(domain, port string, dnsOpts DNSOptions, timeout time.Duration, verbose
 		detail := "Server returns valid retry_configs"
 		if retryResult.RetrySucceeded {
 			detail += " (retry succeeded)"
+		} else if retryResult.RetryError != nil {
+			detail += fmt.Sprintf(" (retry failed: %v)", retryResult.RetryError)
 		}
 		report.Add("Retry Configs", StatusPass, detail)
 	} else if retryResult.RetryConfigsReceived {
-		report.Add("Retry Configs", StatusWarn, "Received but failed to parse")
+		detail := "Received but failed to parse"
+		if retryResult.ParseError != nil {
+			detail += fmt.Sprintf(": %v", retryResult.ParseError)
+		}
+		report.Add("Retry Configs", StatusWarn, detail)
 	} else {
 		report.Add("Retry Configs", StatusWarn, "Server did not send retry_configs")
 	}
