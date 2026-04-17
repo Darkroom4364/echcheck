@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+func dialTLS(host, port string, timeout time.Duration, cfg *tls.Config) (*tls.Conn, error) {
+	addr := net.JoinHostPort(host, port)
+	return tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr, cfg)
+}
+
 // NegotiationResult holds the outcome of an ECH negotiation attempt.
 type NegotiationResult struct {
 	Accepted    bool
@@ -34,10 +39,7 @@ type FallbackResult struct {
 // CheckECHNegotiation attempts a TLS connection with ECH and reports whether
 // the server accepted it.
 func CheckECHNegotiation(host, port string, echConfigList []byte, timeout time.Duration) (*NegotiationResult, error) {
-	addr := net.JoinHostPort(host, port)
-	dialer := &net.Dialer{Timeout: timeout}
-
-	conn, err := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
+	conn, err := dialTLS(host, port, timeout, &tls.Config{
 		ServerName:                     host,
 		EncryptedClientHelloConfigList: echConfigList,
 	})
@@ -70,10 +72,7 @@ func CheckRetryConfigs(host, port string, echConfigList []byte, timeout time.Dur
 		corrupted[20] ^= 0xff
 	}
 
-	addr := net.JoinHostPort(host, port)
-	dialer := &net.Dialer{Timeout: timeout}
-
-	_, err := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
+	_, err := dialTLS(host, port, timeout, &tls.Config{
 		ServerName:                     host,
 		EncryptedClientHelloConfigList: corrupted,
 	})
@@ -102,7 +101,7 @@ func CheckRetryConfigs(host, port string, echConfigList []byte, timeout time.Dur
 	result.RetryConfigsValid = len(configs) > 0
 
 	// Try connecting with the retry configs
-	conn, retryErr := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
+	conn, retryErr := dialTLS(host, port, timeout, &tls.Config{
 		ServerName:                     host,
 		EncryptedClientHelloConfigList: echErr.RetryConfigList,
 	})
@@ -117,10 +116,7 @@ func CheckRetryConfigs(host, port string, echConfigList []byte, timeout time.Dur
 // CheckFallback connects WITHOUT ECH to verify the server still works for
 // non-ECH clients (inverse GREASE test).
 func CheckFallback(host, port string, timeout time.Duration) (*FallbackResult, error) {
-	addr := net.JoinHostPort(host, port)
-	dialer := &net.Dialer{Timeout: timeout}
-
-	conn, err := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
+	conn, err := dialTLS(host, port, timeout, &tls.Config{
 		ServerName: host,
 	})
 	if err != nil {
@@ -142,10 +138,7 @@ func CheckFallback(host, port string, timeout time.Duration) (*FallbackResult, e
 // CheckSNILeakage connects without ECH using the public_name as SNI and verifies
 // the returned cert is for public_name, not the inner domain.
 func CheckSNILeakage(publicName, port string, innerDomain string, timeout time.Duration) (leaks bool, certDomains []string, err error) {
-	addr := net.JoinHostPort(publicName, port)
-	dialer := &net.Dialer{Timeout: timeout}
-
-	conn, err := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
+	conn, err := dialTLS(publicName, port, timeout, &tls.Config{
 		ServerName:         publicName,
 		InsecureSkipVerify: true, // we're checking what cert is served, not validating trust
 	})
